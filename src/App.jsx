@@ -152,26 +152,6 @@ function App() {
         );
       });
 
-      gsap.to(".orb-one", {
-        x: 100,
-        y: 80,
-        rotate: 90,
-        duration: 8,
-        repeat: -1,
-        yoyo: true,
-        ease: "sine.inOut"
-      });
-
-      gsap.to(".orb-two", {
-        x: -120,
-        y: -60,
-        rotate: -70,
-        duration: 10,
-        repeat: -1,
-        yoyo: true,
-        ease: "sine.inOut"
-      });
-
       gsap.to(".hero-code-card", {
         y: -14,
         rotateY: 5,
@@ -975,78 +955,506 @@ function ParticleField() {
   useEffect(() => {
     const canvas = canvasRef.current;
     const ctx = canvas.getContext("2d");
-
-    let width;
-    let height;
-    let particles;
+    let width = window.innerWidth;
+    let height = window.innerHeight;
+    let stars = [];
+    let dust = [];
+    let nebulaLayers = [];
+    let galaxyTexture;
     let frame;
+    let lastFrame = -40;
+    let lastTime = 0;
+    let nextShootingStar = 0;
+    let shootingStar = null;
+    const pixelRatio = Math.min(window.devicePixelRatio || 1, 1.5);
+    const reducedMotion = window.matchMedia(
+      "(prefers-reduced-motion: reduce)"
+    ).matches;
 
-    const resize = () => {
-      width = canvas.width = window.innerWidth * devicePixelRatio;
-      height = canvas.height = window.innerHeight * devicePixelRatio;
+    const createRandom = (seed) => {
+      let state = seed >>> 0;
 
-      canvas.style.width = `${window.innerWidth}px`;
-      canvas.style.height = `${window.innerHeight}px`;
-
-      ctx.setTransform(1, 0, 0, 1, 0, 0);
-      ctx.scale(devicePixelRatio, devicePixelRatio);
-
-      particles = Array.from(
-        {
-          length: Math.min(
-            170,
-            Math.floor(window.innerWidth / 8)
-          )
-        },
-        () => ({
-          x: Math.random() * window.innerWidth,
-          y: Math.random() * window.innerHeight,
-          r: Math.random() * 1.15 + 0.25,
-          vx: (Math.random() - 0.5) * 0.16,
-          vy: (Math.random() - 0.5) * 0.16,
-          alpha: Math.random() * 0.55 + 0.25
-        })
-      );
+      return () => {
+        state += 0x6d2b79f5;
+        let value = state;
+        value = Math.imul(value ^ (value >>> 15), value | 1);
+        value ^= value + Math.imul(value ^ (value >>> 7), value | 61);
+        return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
+      };
     };
 
-    resize();
+    const smooth = (value) => value * value * (3 - 2 * value);
 
-    window.addEventListener("resize", resize);
+    const createNoiseGrid = (columns, rows, random) => {
+      const values = new Float32Array((columns + 1) * (rows + 1));
 
-    const draw = () => {
-      ctx.clearRect(
-        0,
-        0,
-        window.innerWidth,
-        window.innerHeight
+      for (let index = 0; index < values.length; index += 1) {
+        values[index] = random();
+      }
+
+      return { columns, rows, values };
+    };
+
+    const sampleNoise = (grid, x, y) => {
+      const gridX = x * grid.columns;
+      const gridY = y * grid.rows;
+      const left = Math.floor(gridX);
+      const top = Math.floor(gridY);
+      const right = Math.min(left + 1, grid.columns);
+      const bottom = Math.min(top + 1, grid.rows);
+      const fractionX = smooth(gridX - left);
+      const fractionY = smooth(gridY - top);
+      const topLeft = grid.values[top * (grid.columns + 1) + left];
+      const topRight = grid.values[top * (grid.columns + 1) + right];
+      const bottomLeft = grid.values[bottom * (grid.columns + 1) + left];
+      const bottomRight = grid.values[bottom * (grid.columns + 1) + right];
+      const upper = topLeft + (topRight - topLeft) * fractionX;
+      const lower = bottomLeft + (bottomRight - bottomLeft) * fractionX;
+
+      return upper + (lower - upper) * fractionY;
+    };
+
+    const createNebulaTexture = (seed, color, direction) => {
+      const texture = document.createElement("canvas");
+      texture.width = Math.max(240, Math.floor(width * 0.38));
+      texture.height = Math.max(240, Math.floor(height * 0.38));
+      const textureContext = texture.getContext("2d");
+      const random = createRandom(seed);
+      const grids = [
+        createNoiseGrid(5, 5, random),
+        createNoiseGrid(11, 11, random),
+        createNoiseGrid(23, 23, random),
+        createNoiseGrid(47, 47, random)
+      ];
+      const image = textureContext.createImageData(
+        texture.width,
+        texture.height
       );
 
-      particles.forEach((p) => {
-        p.x += p.vx;
-        p.y += p.vy;
+      for (let y = 0; y < texture.height; y += 1) {
+        const normalizedY = y / texture.height;
 
-        if (p.x < 0 || p.x > window.innerWidth) {
-          p.vx *= -1;
+        for (let x = 0; x < texture.width; x += 1) {
+          const normalizedX = x / texture.width;
+          const noise =
+            sampleNoise(grids[0], normalizedX, normalizedY) * 0.48 +
+            sampleNoise(grids[1], normalizedX, normalizedY) * 0.27 +
+            sampleNoise(grids[2], normalizedX, normalizedY) * 0.17 +
+            sampleNoise(grids[3], normalizedX, normalizedY) * 0.08;
+          const centerLine = direction === "violet"
+            ? 0.17 + normalizedX * 0.63 + Math.sin(normalizedX * 8 + seed) * 0.035
+            : 0.78 - normalizedX * 0.55 + Math.sin(normalizedX * 7 + seed) * 0.04;
+          const distance = Math.abs(normalizedY - centerLine);
+          const widthFactor = direction === "violet" ? 0.062 : 0.074;
+          const band = Math.exp(-(distance * distance) / widthFactor);
+          const secondaryBand = Math.exp(
+            -((distance - 0.105) * (distance - 0.105)) / 0.004
+          );
+          const turbulentCloud = Math.max(0, noise - 0.36) * 3;
+          const edgeDensity =
+            0.12 + 0.88 * Math.pow(Math.abs(normalizedX - 0.5) * 2, 1.45);
+          const intensity = Math.min(
+            0.68,
+            turbulentCloud * (band * 0.72 + secondaryBand * 0.2) * edgeDensity
+          );
+
+          if (intensity < 0.025) continue;
+
+          const pixel = (y * texture.width + x) * 4;
+          const colorShift = (noise - 0.5) * 45;
+          image.data[pixel] = Math.max(0, color[0] + colorShift);
+          image.data[pixel + 1] = Math.max(0, color[1] + colorShift);
+          image.data[pixel + 2] = Math.max(0, color[2] + colorShift);
+          image.data[pixel + 3] = intensity * 205;
+        }
+      }
+
+      textureContext.putImageData(image, 0, 0);
+      return texture;
+    };
+
+    const createGalaxyTexture = (random) => {
+      const texture = document.createElement("canvas");
+      const coreTexture = document.createElement("canvas");
+      const armsTexture = document.createElement("canvas");
+      const textureContext = texture.getContext("2d");
+      const coreContext = coreTexture.getContext("2d");
+      const armsContext = armsTexture.getContext("2d");
+      const textureSize = 700;
+      texture.width = textureSize;
+      texture.height = textureSize;
+      coreTexture.width = textureSize;
+      coreTexture.height = textureSize;
+      armsTexture.width = textureSize;
+      armsTexture.height = textureSize;
+
+      const coreGlow = coreContext.createRadialGradient(
+        textureSize / 2,
+        textureSize / 2,
+        2,
+        textureSize / 2,
+        textureSize / 2,
+        textureSize * 0.47
+      );
+      coreGlow.addColorStop(0, "rgba(245, 248, 255, 0.98)");
+      coreGlow.addColorStop(0.018, "rgba(183, 208, 255, 0.68)");
+      coreGlow.addColorStop(0.1, "rgba(77, 139, 247, 0.31)");
+      coreGlow.addColorStop(0.3, "rgba(70, 80, 185, 0.1)");
+      coreGlow.addColorStop(1, "rgba(20, 43, 108, 0)");
+      coreContext.fillStyle = coreGlow;
+      coreContext.fillRect(
+        0,
+        0,
+        textureSize,
+        textureSize
+      );
+
+      armsContext.translate(textureSize / 2, textureSize / 2);
+      for (let arm = 0; arm < 2; arm += 1) {
+        for (let point = 0; point < 4200; point += 1) {
+          const progress = Math.pow(random(), 0.78);
+          const radius = (0.025 + Math.pow(progress, 0.92) * 0.43) * textureSize +
+            Math.sin(progress * 15 + arm) * textureSize * 0.004;
+          const angle = arm * Math.PI + progress * Math.PI * 3.2 +
+            Math.sin(progress * 11 + arm) * 0.08;
+          const spread = (0.008 + progress * 0.06) * textureSize;
+          const jitterX = (random() + random() + random() - 1.5) * spread;
+          const jitterY = (random() + random() + random() - 1.5) * spread;
+          const x = Math.cos(angle) * radius + jitterX;
+          const y = Math.sin(angle) * radius + jitterY;
+          const size = random() * 2 + 0.45;
+          const brightness = random() * 0.5 + 0.24;
+
+          armsContext.fillStyle = random() > 0.74
+            ? `rgba(164, 143, 255, ${brightness})`
+            : random() > 0.84
+              ? `rgba(215, 229, 255, ${brightness})`
+              : `rgba(92, 162, 255, ${brightness})`;
+          armsContext.fillRect(x, y, size, size);
+        }
+      }
+
+      textureContext.translate(textureSize / 2, textureSize / 2);
+      textureContext.scale(1, 0.58);
+      textureContext.drawImage(coreTexture, -textureSize / 2, -textureSize / 2);
+      textureContext.drawImage(armsTexture, -textureSize / 2, -textureSize / 2);
+
+      return { image: texture, core: coreTexture, arms: armsTexture };
+    };
+
+    const createStars = (random) => {
+      const count = Math.min(3200, Math.max(1100, Math.floor(width * 2.15)));
+
+      return Array.from({ length: count }, () => {
+        const depth = random();
+        const distant = depth < 0.76;
+        const foreground = depth > 0.97;
+        const gold = random() < 0.009;
+
+        return {
+          x: random() * width,
+          y: random() * height,
+          radius: distant
+            ? random() * 0.42 + 0.16
+            : foreground
+              ? random() * 0.58 + 0.78
+              : random() * 0.45 + 0.43,
+          alpha: distant
+            ? random() * 0.29 + 0.2
+            : foreground
+              ? random() * 0.23 + 0.7
+              : random() * 0.32 + 0.4,
+          twinkle: true,
+          twinkleAmount: random() * 0.26 + 0.18,
+          phase: random() * Math.PI * 2,
+          pulseSpeed: random() * 0.0002 + 0.00008,
+          driftX: (random() - 0.5) * (distant ? 0.0002 : foreground ? 0.001 : 0.00048),
+          driftY: (random() - 0.5) * (distant ? 0.00016 : foreground ? 0.00078 : 0.00038),
+          glow: random() < (foreground ? 0.55 : 0.12),
+          flare: foreground && random() < 0.045,
+          gold
+        };
+      });
+    };
+
+    const createDust = (random) => {
+      const count = Math.min(220, Math.max(70, Math.floor((width * height) / 9000)));
+      const colors = [
+        [220, 232, 255],
+        [153, 190, 255],
+        [191, 171, 255]
+      ];
+
+      return Array.from({ length: count }, () => ({
+        x: random() * width,
+        y: random() * height,
+        radius: random() * 0.65 + 0.25,
+        alpha: random() * 0.045 + 0.012,
+        driftX: (random() - 0.5) * 0.000045,
+        driftY: (random() - 0.5) * 0.000045,
+        color: colors[Math.floor(random() * colors.length)]
+      }));
+    };
+
+    const resize = () => {
+      width = window.innerWidth;
+      height = window.innerHeight;
+      canvas.width = Math.round(width * pixelRatio);
+      canvas.height = Math.round(height * pixelRatio);
+      canvas.style.width = `${width}px`;
+      canvas.style.height = `${height}px`;
+      ctx.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+
+      const random = createRandom(Math.floor(Math.random() * 0xffffffff));
+      nebulaLayers = [
+        {
+          texture: createNebulaTexture(
+            Math.floor(random() * 1000),
+            [66, 49, 155],
+            "violet"
+          ),
+          phase: random() * Math.PI * 2,
+          opacity: 0.7
+        },
+        {
+          texture: createNebulaTexture(
+            Math.floor(random() * 1000),
+            [30, 96, 190],
+            "blue"
+          ),
+          phase: random() * Math.PI * 2,
+          opacity: 0.74
+        }
+      ];
+      galaxyTexture = createGalaxyTexture(random);
+      stars = createStars(random);
+      dust = createDust(random);
+      shootingStar = null;
+      nextShootingStar = 0;
+      lastTime = 0;
+    };
+
+    const drawNebula = (time) => {
+      nebulaLayers.forEach((layer) => {
+        const driftX = Math.sin(time * 0.000025 + layer.phase) * width * 0.009;
+        const driftY = Math.cos(time * 0.000022 + layer.phase) * height * 0.009;
+        const scale = 1.035 + Math.sin(time * 0.000015 + layer.phase) * 0.012;
+
+        ctx.save();
+        ctx.globalCompositeOperation = "screen";
+        ctx.globalAlpha = layer.opacity * (0.92 + Math.sin(time * 0.00009 + layer.phase) * 0.08);
+        ctx.translate(width / 2 + driftX, height / 2 + driftY);
+        ctx.scale(scale, scale);
+        ctx.drawImage(layer.texture, -width * 0.55, -height * 0.55, width * 1.1, height * 1.1);
+        ctx.restore();
+      });
+    };
+
+    const drawGalaxy = (time) => {
+      const size = Math.min(width * 0.56, height * 0.8, 820);
+      const centerX = width * 0.82 + Math.sin(time * 0.00003) * width * 0.008;
+      const centerY = height * 0.25 + Math.cos(time * 0.000027) * height * 0.009;
+
+      ctx.save();
+      ctx.globalCompositeOperation = "screen";
+      ctx.globalAlpha = 0.88 + Math.sin(time * 0.00016) * 0.045;
+      ctx.translate(centerX, centerY);
+      const scale = 1 + Math.sin(time * 0.00008) * 0.006;
+      ctx.scale(scale, scale * 0.58);
+      ctx.drawImage(galaxyTexture.core, -size / 2, -size / 2, size, size);
+      ctx.rotate(time * 0.000035);
+      ctx.drawImage(galaxyTexture.arms, -size / 2, -size / 2, size, size);
+      ctx.restore();
+
+      ctx.save();
+      ctx.globalCompositeOperation = "screen";
+      ctx.globalAlpha = 0.24;
+      ctx.drawImage(
+        galaxyTexture.image,
+        width * 0.09,
+        height * 0.12,
+        size * 0.19,
+        size * 0.19
+      );
+      ctx.restore();
+    };
+
+    const drawShootingStar = (time, delta) => {
+      if (reducedMotion) return;
+
+      if (!shootingStar && time >= nextShootingStar) {
+        const angle = Math.random() * Math.PI * 2;
+        const duration = 7000;
+        const tailLength = Math.max(85, Math.min(width * 0.12, 155));
+        const speed =
+          (width * 0.96 + tailLength + 20) /
+          duration;
+        shootingStar = {
+          x: width * (0.08 + Math.random() * 0.84),
+          y: height * (0.08 + Math.random() * 0.84),
+          angle,
+          speed,
+          age: 280,
+          duration,
+          tailLength
+        };
+        nextShootingStar = time + 14000 + Math.random() * 2000;
+      }
+
+      if (!shootingStar) return;
+
+      shootingStar.age += delta;
+      const progress = Math.min(1, shootingStar.age / shootingStar.duration);
+
+      if (progress >= 1) {
+        shootingStar = null;
+        return;
+      }
+
+      const headX = shootingStar.x + Math.cos(shootingStar.angle) * shootingStar.speed * shootingStar.age;
+      const headY = shootingStar.y + Math.sin(shootingStar.angle) * shootingStar.speed * shootingStar.age;
+      const tailLength = shootingStar.tailLength;
+      const tailX = headX - Math.cos(shootingStar.angle) * tailLength;
+      const tailY = headY - Math.sin(shootingStar.angle) * tailLength;
+      const trail = ctx.createLinearGradient(tailX, tailY, headX, headY);
+      trail.addColorStop(0, "rgba(255, 215, 106, 0)");
+      trail.addColorStop(0.58, "rgba(255, 215, 106, 0.08)");
+      trail.addColorStop(0.88, "rgba(255, 232, 163, 0.3)");
+      trail.addColorStop(1, "rgba(255, 250, 224, 0.88)");
+      const fadeIn = Math.min(1, shootingStar.age / 180);
+      const fadeOut = Math.min(1, (shootingStar.duration - shootingStar.age) / 750);
+      const opacity = fadeIn * fadeOut;
+
+      ctx.save();
+      ctx.globalCompositeOperation = "screen";
+      ctx.globalAlpha = opacity * 0.78;
+      ctx.strokeStyle = trail;
+      ctx.lineWidth = 1.7;
+      ctx.shadowColor = "rgba(255, 215, 106, 0.7)";
+      ctx.shadowBlur = 8;
+      ctx.beginPath();
+      ctx.moveTo(tailX, tailY);
+      ctx.lineTo(headX, headY);
+      ctx.stroke();
+
+      const headGlow = ctx.createRadialGradient(headX, headY, 0, headX, headY, 10);
+      headGlow.addColorStop(0, "rgba(255, 255, 239, 0.9)");
+      headGlow.addColorStop(0.2, "rgba(255, 239, 179, 0.72)");
+      headGlow.addColorStop(0.55, "rgba(255, 215, 106, 0.32)");
+      headGlow.addColorStop(1, "rgba(255, 215, 106, 0)");
+      ctx.fillStyle = headGlow;
+      ctx.shadowBlur = 7;
+      ctx.beginPath();
+      ctx.arc(headX, headY, 10, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = "rgba(255, 252, 230, 0.9)";
+      ctx.shadowColor = "rgba(255, 232, 163, 0.8)";
+      ctx.shadowBlur = 6;
+      ctx.beginPath();
+      ctx.arc(headX, headY, 2.1, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    };
+
+    const draw = (time) => {
+      if (!reducedMotion && time - lastFrame < 16) {
+        frame = requestAnimationFrame(draw);
+        return;
+      }
+
+      const delta = lastTime ? Math.min(time - lastTime, 64) : 32;
+      lastFrame = time;
+      lastTime = time;
+
+      ctx.clearRect(0, 0, width, height);
+      ctx.fillStyle = "#02030a";
+      ctx.fillRect(0, 0, width, height);
+      drawNebula(reducedMotion ? 0 : time);
+      drawGalaxy(reducedMotion ? 0 : time);
+
+      stars.forEach((star) => {
+        if (!reducedMotion) {
+          star.x += star.driftX * delta;
+          star.y += star.driftY * delta;
+
+          if (star.x < 0) star.x = width;
+          if (star.x > width) star.x = 0;
+          if (star.y < 0) star.y = height;
+          if (star.y > height) star.y = 0;
         }
 
-        if (p.y < 0 || p.y > window.innerHeight) {
-          p.vy *= -1;
+        const twinkle = !reducedMotion && star.twinkle
+          ? 1 - star.twinkleAmount * (0.5 - 0.5 * Math.sin(time * star.pulseSpeed + star.phase))
+          : 1;
+        const brightness = Math.min(1, star.alpha * twinkle * (star.gold ? 1.12 : 1));
+        ctx.beginPath();
+        ctx.arc(star.x, star.y, star.radius, 0, Math.PI * 2);
+        ctx.fillStyle = star.gold
+          ? `rgba(255, 232, 163, ${brightness})`
+          : `rgba(232, 240, 255, ${brightness})`;
+        ctx.shadowColor = star.glow
+          ? star.gold
+            ? `rgba(255, 215, 106, ${brightness})`
+            : `rgba(171, 202, 255, ${brightness})`
+          : "transparent";
+        ctx.shadowBlur = star.glow ? star.radius * (star.gold ? 3.2 : 2.8) : 0;
+        ctx.fill();
+        ctx.shadowBlur = 0;
+
+        if (star.flare) {
+          ctx.save();
+          ctx.globalAlpha = brightness * 0.62;
+          ctx.strokeStyle = "rgba(222, 235, 255, 0.9)";
+          ctx.lineWidth = 0.4;
+          ctx.shadowColor = "rgba(163, 198, 255, 0.6)";
+          ctx.shadowBlur = 4;
+          ctx.beginPath();
+          ctx.moveTo(star.x - 3, star.y);
+          ctx.lineTo(star.x + 3, star.y);
+          ctx.moveTo(star.x, star.y - 3);
+          ctx.lineTo(star.x, star.y + 3);
+          ctx.stroke();
+          ctx.restore();
+        }
+      });
+
+      dust.forEach((particle) => {
+        if (!reducedMotion) {
+          particle.x += particle.driftX * delta;
+          particle.y += particle.driftY * delta;
+
+          if (particle.x < 0) particle.x = width;
+          if (particle.x > width) particle.x = 0;
+          if (particle.y < 0) particle.y = height;
+          if (particle.y > height) particle.y = 0;
         }
 
         ctx.beginPath();
-        ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
-        ctx.fillStyle = `rgba(255, 255, 255, ${p.alpha})`;
+        ctx.arc(particle.x, particle.y, particle.radius, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(${particle.color.join(",")}, ${particle.alpha})`;
         ctx.fill();
       });
 
-      frame = requestAnimationFrame(draw);
+      drawShootingStar(time, delta);
+
+      if (!reducedMotion) {
+        frame = requestAnimationFrame(draw);
+      }
     };
 
-    draw();
+    const handleResize = () => {
+      resize();
+      draw(0);
+    };
+
+    resize();
+    window.addEventListener("resize", handleResize);
+    draw(0);
 
     return () => {
       cancelAnimationFrame(frame);
-      window.removeEventListener("resize", resize);
+      window.removeEventListener("resize", handleResize);
     };
   }, []);
 
